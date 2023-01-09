@@ -40,6 +40,14 @@ class CausalSelfAttention(nn.Module):
         self.n_head = config.n_head
         self.n_embd = config.n_embd
 
+    def set_bidirectional(self, start, end):
+        # update the bias mask to allow bidirectional attention between positions [start, end)
+        block_size = self.bias.shape[-1]
+        self.bias = torch.tril(torch.ones(block_size, block_size)).view(1, 1, block_size, block_size)
+        if end + 1 > block_size:
+            end = block_size - 1
+        self.bias[:, :, start:(end+1), start:(end+1)] = 1
+
     def forward(self, x):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
 
@@ -115,10 +123,19 @@ class GPT(nn.Module):
             ln_f = nn.LayerNorm(config.n_embd),
         ))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+        self.start = 0
+        self.end = 0
 
         # report number of parameters (note we don't count the decoder parameters in lm_head)
         n_params = sum(p.numel() for p in self.transformer.parameters())
         print("number of parameters: %.2fM" % (n_params/1e6,))
+
+    def set_bidirectional(self, start, end):
+        if self.start != start or self.end != end:
+            for block in self.transformer.h:
+                block.attn.set_bidirectional(start, end)
+            self.start = start
+            self.end = end
 
     def forward(self, idx, targets=None):
         device = idx.device
@@ -138,6 +155,10 @@ class GPT(nn.Module):
         # if we are given some desired targets also calculate the loss
         loss = None
         if targets is not None:
+            # set targets to -1 for positions between start and end - 1 (inclusive)
+            # this is so that we don't calculate loss for the bidirectional context
+            targets = targets.clone()
+            targets[:, self.start:self.end] = -1
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
 
         return logits, loss
@@ -258,6 +279,8 @@ class GPT(nn.Module):
         for _ in range(max_new_tokens):
             # if the sequence context is growing too long we must crop it at block_size
             idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size:]
+            # apply bidir to the conditioning sequence
+            self.set_bidirectional(start=0, end=idx_cond.size(1)-1)
             # forward the model to get the logits for the index in the sequence
             logits, _ = self(idx_cond)
             # pluck the logits at the final step and scale by desired temperature

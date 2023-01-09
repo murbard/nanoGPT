@@ -12,6 +12,7 @@ $ torchrun --standalone --nproc_per_node=4 train.py
 import os
 import time
 import math
+import random
 from contextlib import nullcontext
 
 import numpy as np
@@ -60,6 +61,11 @@ backend = 'nccl' # 'nccl', 'gloo', etc.
 device = 'cuda' # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1', etc.
 dtype = 'bfloat16' # 'float32' or 'bfloat16'
 compile = True # use PyTorch 2.0 to compile the model to be faster
+bidir_init_size = 0.0 # initial size of bidir
+bidir_full_size = 0.90 # target size of bidir
+iters_to_full_size = 50000 # over how many iterations does bidir reach full size
+switch_interval = 50 # how often do we replace the bidir mask
+
 # -----------------------------------------------------------------------------
 exec(open('configurator.py').read()) # overrides from command line or config file
 # -----------------------------------------------------------------------------
@@ -232,6 +238,15 @@ while True:
                 torch.save(checkpoint, os.path.join(out_dir, 'ckpt.pt'))
     if iter_num == 0 and eval_only:
         break
+
+    if iter_num % switch_interval == 0:
+        bidir_size = bidir_init_size + min(iter_num, iters_to_full_size) * (bidir_full_size - bidir_init_size) / iters_to_full_size
+        size = int(math.floor(bidir_size * block_size))
+        # pick start and end indices randomly
+        start = random.randint(0, block_size - size + 1)
+        end = start + size - 1
+        model.set_bidirectional(start, end) # inclusive
+        print(f"switch interval to {start} {end}")
 
     X, Y = get_batch('train')
     with ctx:
