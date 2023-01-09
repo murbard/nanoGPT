@@ -43,7 +43,7 @@ class CausalSelfAttention(nn.Module):
     def set_bidirectional(self, start, end):
         # update the bias mask to allow bidirectional attention between positions [start, end)
         block_size = self.bias.shape[-1]
-        self.bias = torch.tril(torch.ones(block_size, block_size)).view(1, 1, block_size, block_size)
+        self.bias = torch.tril(torch.ones(block_size, block_size)).view(1, 1, block_size, block_size).to(self.bias.device)
         if end + 1 > block_size:
             end = block_size - 1
         self.bias[:, :, start:(end+1), start:(end+1)] = 1
